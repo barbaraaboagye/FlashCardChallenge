@@ -1,0 +1,485 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Interactive Flashcard Challenge</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Lexend:wght@400;600;800&display=swap');
+        
+        body {
+            font-family: 'Lexend', sans-serif;
+            background-color: #f0f4f8;
+            user-select: none;
+            touch-action: manipulation;
+        }
+
+        .flashcard {
+            transition: transform 0.6s;
+            transform-style: preserve-3d;
+            box-shadow: 0 10px 25px rgba(0,0,0,0.1);
+            border: 2px solid #e2e8f0;
+        }
+
+        .option-btn {
+            transition: all 0.2s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+        }
+
+        .option-btn:active {
+            transform: scale(0.95);
+        }
+
+        .correct {
+            background-color: #4ade80 !important;
+            border-color: #22c55e !important;
+            color: white !important;
+        }
+
+        .wrong {
+            background-color: #f87171 !important;
+            border-color: #ef4444 !important;
+            color: white !important;
+            animation: shake 0.4s;
+        }
+
+        @keyframes shake {
+            0%, 100% { transform: translateX(0); }
+            25% { transform: translateX(-5px); }
+            75% { transform: translateX(5px); }
+        }
+
+        .progress-bar {
+            transition: width 0.5s ease-in-out;
+        }
+
+        .emoji-large {
+            font-size: 3rem;
+            display: block;
+            margin-bottom: 0.5rem;
+        }
+    </style>
+</head>
+<body class="min-h-screen flex flex-col items-center justify-center p-4">
+
+    <!-- Top Bar -->
+    <div class="w-full max-w-md flex justify-between items-center mb-4 px-2">
+        <button id="mute-btn" class="p-2 bg-white rounded-full shadow-sm hover:bg-slate-50 transition-colors" title="Toggle Sound">
+            <span id="mute-icon" class="text-xl">🔊</span>
+        </button>
+        <div class="text-right">
+            <span class="text-slate-600 font-bold block" id="score-display">Mastery: 0/100</span>
+            <span class="text-slate-400 text-xs" id="remaining-text">Queued: 100</span>
+        </div>
+    </div>
+
+    <!-- Progress -->
+    <div class="w-full max-w-md mb-6">
+        <div class="w-full bg-slate-200 rounded-full h-3">
+            <div id="progress-fill" class="bg-green-500 h-3 rounded-full progress-bar" style="width: 0%"></div>
+        </div>
+    </div>
+
+    <!-- Game Area -->
+    <main id="game-container" class="w-full max-w-md bg-white rounded-3xl p-6 flashcard relative overflow-hidden">
+        <div id="card-content">
+            <h2 id="question-text" class="text-xl md:text-2xl font-bold text-center mb-8 text-slate-800">
+                Loading...
+            </h2>
+
+            <div id="options-grid" class="grid grid-cols-2 gap-4">
+                <!-- Options injected here -->
+            </div>
+        </div>
+
+        <!-- Feedback Overlay -->
+        <div id="feedback" class="hidden absolute inset-0 flex items-center justify-center bg-white/95 z-10">
+            <div class="text-center p-6">
+                <div id="feedback-icon" class="text-7xl mb-4">✅</div>
+                <div id="feedback-text" class="text-2xl font-bold mb-2">Great Job!</div>
+                <div id="feedback-subtext" class="text-slate-500 font-medium"></div>
+            </div>
+        </div>
+    </main>
+
+    <!-- Footer Controls -->
+    <div class="mt-8 flex gap-4 flex-wrap justify-center">
+        <button id="reset-btn" class="px-6 py-2 bg-slate-200 text-slate-700 rounded-xl font-bold hover:bg-slate-300 transition-colors">
+            Restart
+        </button>
+        <button onclick="document.getElementById('file-input').click()" class="px-6 py-2 bg-blue-100 text-blue-700 rounded-xl font-bold hover:bg-blue-200 transition-colors flex items-center gap-2">
+            <span>📂</span> Import .txt
+        </button>
+        <input type="file" id="file-input" hidden accept=".txt" onchange="handleFileUpload(this)">
+    </div>
+
+    <script>
+        // --- SOUND ENGINE ---
+        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        let isMuted = false;
+
+        function playSound(type) {
+            if (isMuted) return;
+            if (audioCtx.state === 'suspended') audioCtx.resume();
+
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            
+            osc.connect(gain);
+            gain.connect(audioCtx.destination);
+
+            if (type === 'correct') {
+                osc.type = 'sine';
+                osc.frequency.setValueAtTime(523.25, audioCtx.currentTime); 
+                osc.frequency.exponentialRampToValueAtTime(1046.50, audioCtx.currentTime + 0.1);
+                gain.gain.setValueAtTime(0, audioCtx.currentTime);
+                gain.gain.linearRampToValueAtTime(0.2, audioCtx.currentTime + 0.05);
+                gain.gain.linearRampToValueAtTime(0, audioCtx.currentTime + 0.3);
+                osc.start();
+                osc.stop(audioCtx.currentTime + 0.3);
+            } else if (type === 'wrong') {
+                osc.type = 'triangle';
+                osc.frequency.setValueAtTime(220, audioCtx.currentTime);
+                osc.frequency.exponentialRampToValueAtTime(110, audioCtx.currentTime + 0.2);
+                gain.gain.setValueAtTime(0, audioCtx.currentTime);
+                gain.gain.linearRampToValueAtTime(0.2, audioCtx.currentTime + 0.05);
+                gain.gain.linearRampToValueAtTime(0, audioCtx.currentTime + 0.4);
+                osc.start();
+                osc.stop(audioCtx.currentTime + 0.4);
+            }
+        }
+
+        // --- DATA ---
+        // 100 Unique Questions
+        let initialQuestions = [
+            // OCCUPATIONS
+            { q: "Who flies an airplane?", options: [{t:"Pilot", e:"👨‍✈️"}, {t:"Actor", e:"🎭"}, {t:"Teacher", e:"👩‍🏫"}, {t:"Postman", e:"📮"}], correct: 0 },
+            { q: "Who helps you when you are sick?", options: [{t:"Doctor", e:"👨‍⚕️"}, {t:"Chef", e:"👨‍🍳"}, {t:"Fireman", e:"👨‍🚒"}, {t:"Farmer", e:"👨‍🌾"}], correct: 0 },
+            { q: "Who cooks food in a restaurant?", options: [{t:"Chef", e:"👨‍🍳"}, {t:"Pilot", e:"👨‍✈️"}, {t:"Nurse", e:"👩‍⚕️"}, {t:"Driver", e:"🚌"}], correct: 0 },
+            { q: "Who puts out fires?", options: [{t:"Firefighter", e:"👨‍🚒"}, {t:"Baker", e:"🍞"}, {t:"Artist", e:"🎨"}, {t:"Vet", e:"🐶"}], correct: 0 },
+            { q: "Who teaches students?", options: [{t:"Teacher", e:"👩‍🏫"}, {t:"Clown", e:"🤡"}, {t:"Police", e:"👮"}, {t:"Dentist", e:"🦷"}], correct: 0 },
+            { q: "Who grows vegetables?", options: [{t:"Farmer", e:"👨‍🌾"}, {t:"Singer", e:"🎤"}, {t:"Astronaut", e:"👩‍🚀"}, {t:"Judge", e:"⚖️"}], correct: 0 },
+            { q: "Who catches bad guys?", options: [{t:"Police", e:"👮"}, {t:"Doctor", e:"👨‍⚕️"}, {t:"Painter", e:"🖌️"}, {t:"Waiter", e:"🍽️"}], correct: 0 },
+            { q: "Who fixes cars?", options: [{t:"Mechanic", e:"🔧"}, {t:"Teacher", e:"👩‍🏫"}, {t:"Writer", e:"📝"}, {t:"Dancer", e:"💃"}], correct: 0 },
+            { q: "Who travels to space?", options: [{t:"Astronaut", e:"👩‍🚀"}, {t:"Driver", e:"🚗"}, {t:"Farmer", e:"🌾"}, {t:"Baker", e:"🥖"}], correct: 0 },
+            { q: "Who paints pictures?", options: [{t:"Artist", e:"🎨"}, {t:"Soldier", e:"💂"}, {t:"Nurse", e:"🏥"}, {t:"Pilot", e:"✈️"}], correct: 0 },
+            
+            // FOOD
+            { q: "What might you drink when thirsty?", options: [{t:"Juice", e:"🍹"}, {t:"Bread", e:"🍞"}, {t:"Apple", e:"🍎"}, {t:"Rice", e:"🍚"}], correct: 0 },
+            { q: "Which is a fruit?", options: [{t:"Banana", e:"🍌"}, {t:"Potato", e:"🥔"}, {t:"Carrot", e:"🥕"}, {t:"Onion", e:"🧅"}], correct: 0 },
+            { q: "What do bees make?", options: [{t:"Honey", e:"🍯"}, {t:"Milk", e:"🥛"}, {t:"Water", e:"💧"}, {t:"Soup", e:"🍲"}], correct: 0 },
+            { q: "Which food is yellow?", options: [{t:"Corn", e:"🌽"}, {t:"Blueberry", e:"🫐"}, {t:"Tomato", e:"🍅"}, {t:"Spinach", e:"🍃"}], correct: 0 },
+            { q: "What is made from milk?", options: [{t:"Cheese", e:"🧀"}, {t:"Jam", e:"🍓"}, {t:"Ham", e:"🍖"}, {t:"Rice", e:"🍚"}], correct: 0 },
+            { q: "Which is a vegetable?", options: [{t:"Broccoli", e:"🥦"}, {t:"Apple", e:"🍎"}, {t:"Grape", e:"🍇"}, {t:"Cherry", e:"🍒"}], correct: 0 },
+            { q: "What do we eat for breakfast?", options: [{t:"Cereal", e:"🥣"}, {t:"Steak", e:"🥩"}, {t:"Candy", e:"🍬"}, {t:"Soda", e:"🥤"}], correct: 0 },
+            { q: "Which fruit is red?", options: [{t:"Strawberry", e:"🍓"}, {t:"Lemon", e:"🍋"}, {t:"Lime", e:"🍈"}, {t:"Banana", e:"🍌"}], correct: 0 },
+            { q: "What is sweet?", options: [{t:"Cake", e:"🍰"}, {t:"Lemon", e:"🍋"}, {t:"Salt", e:"🧂"}, {t:"Pepper", e:"🌶️"}], correct: 0 },
+            { q: "What comes from a chicken?", options: [{t:"Egg", e:"🥚"}, {t:"Milk", e:"🥛"}, {t:"Wool", e:"🧶"}, {t:"Honey", e:"🍯"}], correct: 0 },
+
+            // ANIMALS
+            { q: "Which animal says 'Meow'?", options: [{t:"Cat", e:"🐱"}, {t:"Dog", e:"🐶"}, {t:"Cow", e:"🐮"}, {t:"Pig", e:"🐷"}], correct: 0 },
+            { q: "Which animal gives us milk?", options: [{t:"Cow", e:"🐮"}, {t:"Lion", e:"🦁"}, {t:"Tiger", e:"🐯"}, {t:"Monkey", e:"🐒"}], correct: 0 },
+            { q: "Which animal has a long neck?", options: [{t:"Giraffe", e:"🦒"}, {t:"Bear", e:"🐻"}, {t:"Ant", e:"🐜"}, {t:"Frog", e:"🐸"}], correct: 0 },
+            { q: "Which animal lives in water?", options: [{t:"Fish", e:"🐟"}, {t:"Bird", e:"🐦"}, {t:"Cat", e:"🐱"}, {t:"Rabbit", e:"🐰"}], correct: 0 },
+            { q: "Which animal can fly?", options: [{t:"Bird", e:"🐦"}, {t:"Elephant", e:"🐘"}, {t:"Dog", e:"🐶"}, {t:"Snake", e:"🐍"}], correct: 0 },
+            { q: "Which animal is very big?", options: [{t:"Elephant", e:"🐘"}, {t:"Mouse", e:"🐭"}, {t:"Bee", e:"🐝"}, {t:"Ant", e:"🐜"}], correct: 0 },
+            { q: "Which animal has a trunk?", options: [{t:"Elephant", e:"🐘"}, {t:"Lion", e:"🦁"}, {t:"Zebra", e:"🦓"}, {t:"Horse", e:"🐴"}], correct: 0 },
+            { q: "Which animal is the King of the Jungle?", options: [{t:"Lion", e:"🦁"}, {t:"Sheep", e:"🐑"}, {t:"Rabbit", e:"🐰"}, {t:"Duck", e:"🦆"}], correct: 0 },
+            { q: "Which animal hops?", options: [{t:"Rabbit", e:"🐰"}, {t:"Turtle", e:"🐢"}, {t:"Snail", e:"🐌"}, {t:"Fish", e:"🐟"}], correct: 0 },
+            { q: "Which animal gives us wool?", options: [{t:"Sheep", e:"🐑"}, {t:"Pig", e:"🐷"}, {t:"Chicken", e:"🐔"}, {t:"Horse", e:"🐴"}], correct: 0 },
+
+            // COLORS
+            { q: "What color is an orange?", options: [{t:"Orange", e:"🟧"}, {t:"Pink", e:"🟪"}, {t:"Blue", e:"🟦"}, {t:"Brown", e:"🟫"}], correct: 0 },
+            { q: "What color is the grass?", options: [{t:"Green", e:"🟩"}, {t:"Red", e:"🟥"}, {t:"Yellow", e:"🟨"}, {t:"Purple", e:"🟪"}], correct: 0 },
+            { q: "What color is the sky?", options: [{t:"Blue", e:"🟦"}, {t:"Green", e:"🟩"}, {t:"Red", e:"🟥"}, {t:"Orange", e:"🟧"}], correct: 0 },
+            { q: "What color is a banana?", options: [{t:"Yellow", e:"🟨"}, {t:"Blue", e:"🟦"}, {t:"Purple", e:"🟪"}, {t:"Pink", e:"🧠"}], correct: 0 },
+            { q: "What color is snow?", options: [{t:"White", e:"⬜"}, {t:"Black", e:"⬛"}, {t:"Green", e:"🟩"}, {t:"Red", e:"🟥"}], correct: 0 },
+            { q: "What color is the night sky?", options: [{t:"Black", e:"⬛"}, {t:"Yellow", e:"🟨"}, {t:"White", e:"⬜"}, {t:"Orange", e:"🟧"}], correct: 0 },
+            { q: "What color is a flamingo?", options: [{t:"Pink", e:"🦩"}, {t:"Green", e:"🟩"}, {t:"Blue", e:"🟦"}, {t:"Black", e:"⬛"}], correct: 0 },
+            { q: "What color is chocolate?", options: [{t:"Brown", e:"🍫"}, {t:"Blue", e:"🟦"}, {t:"Pink", e:"🧠"}, {t:"Green", e:"🟩"}], correct: 0 },
+            { q: "What color is a tomato?", options: [{t:"Red", e:"🟥"}, {t:"Blue", e:"🟦"}, {t:"Purple", e:"🟪"}, {t:"White", e:"⬜"}], correct: 0 },
+            { q: "What color is an eggplant?", options: [{t:"Purple", e:"🍆"}, {t:"Red", e:"🟥"}, {t:"Yellow", e:"🟨"}, {t:"Orange", e:"🟧"}], correct: 0 },
+
+            // TOOLS & OBJECTS
+            { q: "What tool do you use to cut paper?", options: [{t:"Scissors", e:"✂️"}, {t:"Glue", e:"🧪"}, {t:"Pen", e:"🖋️"}, {t:"Notebook", e:"📒"}], correct: 0 },
+            { q: "What do you use to write?", options: [{t:"Pencil", e:"✏️"}, {t:"Hammer", e:"🔨"}, {t:"Spoon", e:"🥄"}, {t:"Brush", e:"🖌️"}], correct: 0 },
+            { q: "What tells us the time?", options: [{t:"Clock", e:"⏰"}, {t:"Lamp", e:"💡"}, {t:"Table", e:"🪑"}, {t:"Book", e:"📚"}], correct: 0 },
+            { q: "What do you use to call someone?", options: [{t:"Phone", e:"📱"}, {t:"Remote", e:"📺"}, {t:"Calculator", e:"🧮"}, {t:"Camera", e:"📷"}], correct: 0 },
+            { q: "What do you use to sweep the floor?", options: [{t:"Broom", e:"🧹"}, {t:"Shovel", e:"⛏️"}, {t:"Rake", e:"🍂"}, {t:"Fork", e:"🍴"}], correct: 0 },
+            { q: "What do you use to unlock a door?", options: [{t:"Key", e:"🔑"}, {t:"Coin", e:"🪙"}, {t:"Ring", e:"💍"}, {t:"Pen", e:"🖊️"}], correct: 0 },
+            { q: "What do you use to eat soup?", options: [{t:"Spoon", e:"🥄"}, {t:"Fork", e:"🍴"}, {t:"Knife", e:"🔪"}, {t:"Straw", e:"🥤"}], correct: 0 },
+            { q: "What do you use to drink water?", options: [{t:"Cup", e:"🥛"}, {t:"Plate", e:"🍽️"}, {t:"Bowl", e:"🥣"}, {t:"Pan", e:"🍳"}], correct: 0 },
+            { q: "What do you sleep on?", options: [{t:"Bed", e:"🛏️"}, {t:"Desk", e:"🖥️"}, {t:"Chair", e:"🪑"}, {t:"Bike", e:"🚲"}], correct: 0 },
+            { q: "What do you use to brush teeth?", options: [{t:"Toothbrush", e:"🪥"}, {t:"Comb", e:"🪮"}, {t:"Soap", e:"🧼"}, {t:"Sponge", e:"🧽"}], correct: 0 },
+
+            // NATURE & SEASONS
+            { q: "During which season do leaves fall?", options: [{t:"Autumn", e:"🍂"}, {t:"Summer", e:"☀️"}, {t:"Winter", e:"☃️"}, {t:"Spring", e:"🌸"}], correct: 0 },
+            { q: "Where do fish live?", options: [{t:"Water", e:"🌊"}, {t:"Trees", e:"🌳"}, {t:"Cloud", e:"☁️"}, {t:"Sand", e:"🏜️"}], correct: 0 },
+            { q: "What shines in the day?", options: [{t:"Sun", e:"☀️"}, {t:"Moon", e:"🌙"}, {t:"Star", e:"⭐"}, {t:"Lamp", e:"💡"}], correct: 0 },
+            { q: "What falls from the sky?", options: [{t:"Rain", e:"🌧️"}, {t:"Rock", e:"🪨"}, {t:"Grass", e:"🌱"}, {t:"Sand", e:"🏖️"}], correct: 0 },
+            { q: "What is cold and white?", options: [{t:"Snow", e:"❄️"}, {t:"Fire", e:"🔥"}, {t:"Dirt", e:"💩"}, {t:"Sand", e:"🏜️"}], correct: 0 },
+            { q: "Where do birds live?", options: [{t:"Nest", e:"🪹"}, {t:"Cave", e:"🕳️"}, {t:"Water", e:"💧"}, {t:"Car", e:"🚗"}], correct: 0 },
+            { q: "What grows on trees?", options: [{t:"Leaves", e:"🍃"}, {t:"Rocks", e:"🪨"}, {t:"Cars", e:"🚗"}, {t:"Shoes", e:"👟"}], correct: 0 },
+            { q: "When do we see stars?", options: [{t:"Night", e:"🌃"}, {t:"Morning", e:"🌅"}, {t:"Noon", e:"🕛"}, {t:"Afternoon", e:"🕑"}], correct: 0 },
+            { q: "What is a mountain?", options: [{t:"High", e:"🏔️"}, {t:"Flat", e:"🛣️"}, {t:"Liquid", e:"💧"}, {t:"Small", e:"🐜"}], correct: 0 },
+            { q: "Where do we plant flowers?", options: [{t:"Garden", e:"🌻"}, {t:"Kitchen", e:"🍳"}, {t:"Bedroom", e:"🛏️"}, {t:"Bathroom", e:"🛁"}], correct: 0 },
+
+            // VEHICLES
+            { q: "Which vehicle has two wheels?", options: [{t:"Bicycle", e:"🚲"}, {t:"Car", e:"🚗"}, {t:"Bus", e:"🚌"}, {t:"Train", e:"🚂"}], correct: 0 },
+            { q: "What goes on water?", options: [{t:"Boat", e:"🚤"}, {t:"Car", e:"🚗"}, {t:"Truck", e:"🚛"}, {t:"Train", e:"🚂"}], correct: 0 },
+            { q: "What flies in the air?", options: [{t:"Plane", e:"✈️"}, {t:"Bus", e:"🚌"}, {t:"Bike", e:"🚲"}, {t:"Ship", e:"🚢"}], correct: 0 },
+            { q: "What runs on tracks?", options: [{t:"Train", e:"🚂"}, {t:"Car", e:"🚗"}, {t:"Boat", e:"🚤"}, {t:"Bus", e:"🚌"}], correct: 0 },
+            { q: "What has 4 wheels?", options: [{t:"Car", e:"🚗"}, {t:"Bike", e:"🚲"}, {t:"Boat", e:"🚤"}, {t:"Plane", e:"✈️"}], correct: 0 },
+            { q: "Who drives a school bus?", options: [{t:"Driver", e:"👮"}, {t:"Pilot", e:"✈️"}, {t:"Chef", e:"👨‍🍳"}, {t:"Doctor", e:"👨‍⚕️"}], correct: 0 },
+            { q: "What do we use to transport sick people?", options: [{t:"Ambulance", e:"🚑"}, {t:"Taxi", e:"🚕"}, {t:"Police Car", e:"🚓"}, {t:"Truck", e:"🚛"}], correct: 0 },
+            { q: "What vehicle is very long?", options: [{t:"Train", e:"🚆"}, {t:"Bike", e:"🚲"}, {t:"Scooter", e:"🛴"}, {t:"Skateboard", e:"🛹"}], correct: 0 },
+            { q: "What has a siren?", options: [{t:"Police Car", e:"🚓"}, {t:"Bicycle", e:"🚲"}, {t:"Scooter", e:"🛴"}, {t:"Skateboard", e:"🛹"}], correct: 0 },
+            { q: "What do you use to move furniture?", options: [{t:"Truck", e:"🚚"}, {t:"Car", e:"🚗"}, {t:"Bike", e:"🚲"}, {t:"Scooter", e:"🛴"}], correct: 0 },
+
+            // BODY PARTS
+            { q: "What do we use to see?", options: [{t:"Eyes", e:"👀"}, {t:"Ears", e:"👂"}, {t:"Nose", e:"👃"}, {t:"Hands", e:"✋"}], correct: 0 },
+            { q: "What do we use to hear?", options: [{t:"Ears", e:"👂"}, {t:"Eyes", e:"👀"}, {t:"Mouth", e:"👄"}, {t:"Feet", e:"🦶"}], correct: 0 },
+            { q: "What do we use to smell?", options: [{t:"Nose", e:"👃"}, {t:"Hand", e:"✋"}, {t:"Eye", e:"👁️"}, {t:"Knee", e:"🦵"}], correct: 0 },
+            { q: "What do we use to walk?", options: [{t:"Legs", e:"🦵"}, {t:"Hands", e:"✋"}, {t:"Ears", e:"👂"}, {t:"Nose", e:"👃"}], correct: 0 },
+            { q: "What do we use to hold things?", options: [{t:"Hands", e:"✋"}, {t:"Feet", e:"🦶"}, {t:"Eyes", e:"👀"}, {t:"Ears", e:"👂"}], correct: 0 },
+            { q: "What is inside your mouth?", options: [{t:"Tongue", e:"👅"}, {t:"Nose", e:"👃"}, {t:"Ear", e:"👂"}, {t:"Eye", e:"👁️"}], correct: 0 },
+            { q: "What is on your head?", options: [{t:"Hair", e:"💇"}, {t:"Hand", e:"✋"}, {t:"Foot", e:"🦶"}, {t:"Knee", e:"🦵"}], correct: 0 },
+            { q: "What connects your hand to your arm?", options: [{t:"Wrist", e:"💪"}, {t:"Knee", e:"🦵"}, {t:"Ankle", e:"🦶"}, {t:"Neck", e:"👤"}], correct: 0 },
+            { q: "How many fingers do you have on one hand?", options: [{t:"5", e:"🖐️"}, {t:"2", e:"✌️"}, {t:"10", e:"👐"}, {t:"1", e:"☝️"}], correct: 0 },
+            { q: "What beats in your chest?", options: [{t:"Heart", e:"❤️"}, {t:"Brain", e:"🧠"}, {t:"Stomach", e:"🥪"}, {t:"Foot", e:"🦶"}], correct: 0 },
+
+            // CLOTHING
+            { q: "What do you wear on your feet?", options: [{t:"Shoes", e:"👟"}, {t:"Hat", e:"🎩"}, {t:"Gloves", e:"🧤"}, {t:"Shirt", e:"👕"}], correct: 0 },
+            { q: "What do you wear on your head?", options: [{t:"Hat", e:"🧢"}, {t:"Sock", e:"🧦"}, {t:"Shoe", e:"👞"}, {t:"Belt", e:"👖"}], correct: 0 },
+            { q: "What do you wear when it's cold?", options: [{t:"Coat", e:"🧥"}, {t:"T-shirt", e:"👕"}, {t:"Shorts", e:"🩳"}, {t:"Sandals", e:"🩴"}], correct: 0 },
+            { q: "What do you wear on your hands?", options: [{t:"Gloves", e:"🧤"}, {t:"Hat", e:"🧢"}, {t:"Socks", e:"🧦"}, {t:"Shoes", e:"👟"}], correct: 0 },
+            { q: "What do you wear to swim?", options: [{t:"Swimsuit", e:"🩱"}, {t:"Coat", e:"🧥"}, {t:"Jeans", e:"👖"}, {t:"Scarf", e:"🧣"}], correct: 0 },
+            { q: "What do you wear around your neck?", options: [{t:"Scarf", e:"🧣"}, {t:"Belt", e:"👖"}, {t:"Sock", e:"🧦"}, {t:"Shoe", e:"👟"}], correct: 0 },
+            { q: "What do you wear on your legs?", options: [{t:"Pants", e:"👖"}, {t:"Hat", e:"🧢"}, {t:"Shirt", e:"👕"}, {t:"Glove", e:"🧤"}], correct: 0 },
+            { q: "What keeps your feet warm?", options: [{t:"Socks", e:"🧦"}, {t:"Hat", e:"🧢"}, {t:"Belt", e:"👖"}, {t:"Gloves", e:"🧤"}], correct: 0 },
+            { q: "What do you wear to bed?", options: [{t:"Pajamas", e:"😴"}, {t:"Jeans", e:"👖"}, {t:"Coat", e:"🧥"}, {t:"Shoes", e:"👟"}], correct: 0 },
+            { q: "What protects your eyes from sun?", options: [{t:"Sunglasses", e:"🕶️"}, {t:"Hat", e:"🧢"}, {t:"Scarf", e:"🧣"}, {t:"Mask", e:"😷"}], correct: 0 },
+
+            // ACTIONS
+            { q: "What does a fish do?", options: [{t:"Swim", e:"🏊"}, {t:"Fly", e:"🕊️"}, {t:"Run", e:"🏃"}, {t:"Jump", e:"🦘"}], correct: 0 },
+            { q: "What does a bird do?", options: [{t:"Fly", e:"🕊️"}, {t:"Swim", e:"🏊"}, {t:"Read", e:"📖"}, {t:"Drive", e:"🚗"}], correct: 0 },
+            { q: "What do you do with a book?", options: [{t:"Read", e:"📖"}, {t:"Eat", e:"🍽️"}, {t:"Wear", e:"👕"}, {t:"Drive", e:"🚗"}], correct: 0 },
+            { q: "What do you do with a pen?", options: [{t:"Write", e:"✍️"}, {t:"Eat", e:"🍽️"}, {t:"Sleep", e:"😴"}, {t:"Run", e:"🏃"}], correct: 0 },
+            { q: "What do you do when you are tired?", options: [{t:"Sleep", e:"😴"}, {t:"Run", e:"🏃"}, {t:"Jump", e:"🦘"}, {t:"Dance", e:"💃"}], correct: 0 },
+            { q: "What do you do when you are hungry?", options: [{t:"Eat", e:"🍽️"}, {t:"Sleep", e:"😴"}, {t:"Drink", e:"🥤"}, {t:"Wash", e:"🚿"}], correct: 0 },
+            { q: "What do you do with water?", options: [{t:"Drink", e:"🥤"}, {t:"Eat", e:"🍽️"}, {t:"Read", e:"📖"}, {t:"Write", e:"✍️"}], correct: 0 },
+            { q: "What do you do in a race?", options: [{t:"Run", e:"🏃"}, {t:"Sleep", e:"😴"}, {t:"Eat", e:"🍽️"}, {t:"Sit", e:"🪑"}], correct: 0 },
+            { q: "What do you do to music?", options: [{t:"Dance", e:"💃"}, {t:"Sleep", e:"😴"}, {t:"Read", e:"📖"}, {t:"Cry", e:"😢"}], correct: 0 },
+            { q: "What do you do with a ball?", options: [{t:"Throw", e:"⚾"}, {t:"Eat", e:"🍽️"}, {t:"Write", e:"✍️"}, {t:"Read", e:"📖"}], correct: 0 }
+        ].map((q, i) => ({...q, id: i + 1}));
+
+        // --- GAME LOGIC ---
+        function shuffleArray(array) {
+            for (let i = array.length - 1; i > 0; i--) {
+                const j = Math.floor(Math.random() * (i + 1));
+                [array[i], array[j]] = [array[j], array[i]];
+            }
+            return array;
+        }
+
+        let questionQueue = [];
+        let solvedIds = new Set();
+        let totalUnique = 0;
+        let canClick = true;
+
+        const questionText = document.getElementById('question-text');
+        const optionsGrid = document.getElementById('options-grid');
+        const scoreDisplay = document.getElementById('score-display');
+        const remainingText = document.getElementById('remaining-text');
+        const progressFill = document.getElementById('progress-fill');
+        const feedbackOverlay = document.getElementById('feedback');
+        const feedbackIcon = document.getElementById('feedback-icon');
+        const feedbackText = document.getElementById('feedback-text');
+        const feedbackSubtext = document.getElementById('feedback-subtext');
+        const resetBtn = document.getElementById('reset-btn');
+        const muteBtn = document.getElementById('mute-btn');
+        const muteIcon = document.getElementById('mute-icon');
+
+        function initGame(questions) {
+            totalUnique = questions.length;
+            solvedIds.clear();
+            questionQueue = shuffleArray([...questions]);
+            updateProgress();
+            loadNext();
+        }
+
+        function updateProgress() {
+            const solvedCount = solvedIds.size;
+            scoreDisplay.innerText = `Mastery: ${solvedCount}/${totalUnique}`;
+            remainingText.innerText = `Queued: ${questionQueue.length}`;
+            progressFill.style.width = totalUnique > 0 ? `${(solvedCount / totalUnique) * 100}%` : '0%';
+        }
+
+        function loadNext() {
+            if (questionQueue.length === 0) {
+                showFinalScreen();
+                return;
+            }
+
+            canClick = true;
+            const q = questionQueue[0];
+            
+            const words = q.q.split(' ');
+            if (['Who', 'What', 'Where', 'Which', 'When', 'Why', 'How'].includes(words[0])) {
+                words[0] = `<span class="text-red-500">${words[0]}</span>`;
+            }
+            questionText.innerHTML = words.join(' ');
+
+            optionsGrid.innerHTML = '';
+            
+            // Randomize buttons for this question
+            const shuffledOptions = shuffleArray([...q.options.map((o, idx) => ({...o, originalIndex: idx}))]);
+            
+            shuffledOptions.forEach((opt) => {
+                const btn = document.createElement('button');
+                btn.className = 'option-btn bg-slate-50 border-2 border-slate-200 rounded-2xl p-4 flex flex-col items-center justify-center hover:border-blue-400 hover:bg-blue-50';
+                
+                // Fallback for missing emoji
+                const displayEmoji = opt.e || '🔹';
+
+                btn.innerHTML = `
+                    <span class="emoji-large">${displayEmoji}</span>
+                    <span class="text-sm font-bold text-slate-700 text-center">${opt.t}</span>
+                `;
+                btn.onclick = () => handleAnswer(opt.originalIndex, btn);
+                optionsGrid.appendChild(btn);
+            });
+            updateProgress();
+        }
+
+        function handleAnswer(selectedIndex, btn) {
+            if (!canClick) return;
+            canClick = false;
+
+            const currentQ = questionQueue[0];
+            const isCorrect = selectedIndex === currentQ.correct;
+
+            if (isCorrect) {
+                playSound('correct');
+                btn.classList.add('correct');
+                solvedIds.add(currentQ.id);
+                questionQueue.shift();
+                showFeedback(true);
+            } else {
+                playSound('wrong');
+                btn.classList.add('wrong');
+                
+                // Move missed question to the back
+                const missed = questionQueue.shift();
+                questionQueue.push(missed);
+                showFeedback(false);
+            }
+
+            setTimeout(() => {
+                feedbackOverlay.classList.add('hidden');
+                loadNext();
+            }, 1600);
+        }
+
+        function showFeedback(isCorrect) {
+            feedbackIcon.innerText = isCorrect ? '✅' : '🔁';
+            feedbackText.innerText = isCorrect ? 'Great Job!' : 'Keep Practicing!';
+            feedbackSubtext.innerText = isCorrect ? 'You mastered this one.' : 'This card is going back to the end of the stack.';
+            feedbackOverlay.classList.remove('hidden');
+        }
+
+        function showFinalScreen() {
+            const container = document.getElementById('game-container');
+            container.innerHTML = `
+                <div class="text-center py-10">
+                    <div class="text-7xl mb-6">🏆</div>
+                    <h2 class="text-3xl font-bold mb-4">Lesson Mastered!</h2>
+                    <p class="text-xl text-slate-600 mb-8">You successfully finished all ${totalUnique} challenges.</p>
+                    <button onclick="location.reload()" class="bg-green-500 text-white px-10 py-4 rounded-2xl font-bold text-xl hover:bg-green-600 transition-all shadow-lg hover:shadow-xl">
+                        Play Again
+                    </button>
+                </div>
+            `;
+        }
+
+        // --- IMPORT LOGIC ---
+        function handleFileUpload(input) {
+            const file = input.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                const text = e.target.result;
+                const newQuestions = parseQuestions(text);
+                if (newQuestions.length > 0) {
+                    if(confirm(`Successfully loaded ${newQuestions.length} questions. Start game?`)) {
+                        initGame(newQuestions);
+                    }
+                } else {
+                    alert("No valid questions found. Please check file format: Question|Correct|Wrong1|Wrong2|Wrong3");
+                }
+            };
+            reader.readAsText(file);
+            input.value = ''; // Reset
+        }
+
+        function parseQuestions(text) {
+            const lines = text.split('\n');
+            const parsed = [];
+            let idCounter = 1;
+
+            for (let line of lines) {
+                line = line.trim();
+                if (!line || line.startsWith('#')) continue;
+
+                const parts = line.split('|').map(p => p.trim());
+                if (parts.length >= 5) {
+                    // Format: Q | Correct | Wrong1 | Wrong2 | Wrong3
+                    // We attempt to extract emoji from the string if present, otherwise just text
+                    const extractEmoji = (str) => {
+                        const emojiRegex = /(\p{Emoji_Presentation}|\p{Extended_Pictographic})/u;
+                        const match = str.match(emojiRegex);
+                        return match ? match[0] : null;
+                    };
+
+                    const cleanText = (str) => str.replace(/(\p{Emoji_Presentation}|\p{Extended_Pictographic})/u, '').trim();
+
+                    const createOption = (rawStr) => {
+                        const emo = extractEmoji(rawStr);
+                        // If no emoji found in text, leave it null (will use fallback in display)
+                        return {
+                            t: rawStr, // Keep full text including emoji for simplicity or strip it
+                            e: emo
+                        };
+                    };
+
+                    parsed.push({
+                        id: idCounter++,
+                        q: parts[0],
+                        options: [
+                            createOption(parts[1]),
+                            createOption(parts[2]),
+                            createOption(parts[3]),
+                            createOption(parts[4])
+                        ],
+                        correct: 0 // The first option in the text file is assumed correct
+                    });
+                }
+            }
+            return parsed;
+        }
+
+        muteBtn.onclick = () => {
+            isMuted = !isMuted;
+            muteIcon.innerText = isMuted ? '🔇' : '🔊';
+        };
+
+        resetBtn.onclick = () => {
+            if(confirm("Restart the lesson?")) location.reload();
+        };
+
+        // Start
+        initGame(initialQuestions);
+    </script>
+</body>
+</html>
